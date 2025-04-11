@@ -11,7 +11,7 @@ turnGain = 0.7;            % Set steering responsiveness (turning sensitivity)
 %% ================== Randomized Obstacle Setup ==================
 map = binaryOccupancyMap(mapSize, mapSize, resolution);
 
-numObstacles = randi([20, 40]);      % Reduced obstacle count
+numObstacles = randi([15, 25]);      % Reduced obstacle count
 minSize = 2; maxSize = 8;            
 
 generateRandomObstacles(map, numObstacles, minSize, maxSize);
