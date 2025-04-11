@@ -1,0 +1,165 @@
+clc; clear; close all;
+
+%% ================== Map Toggle (Set to 1 or 2) ==================
+mapChoice = 2;  % Change to 2 for alternate map
+
+%% ================== Simulation Parameters ==================
+mapSize = 100;             % Set the environment size (100x100 grid)
+resolution = 1;            % Define grid resolution (1 meter per grid)
+robotSpeed = 0.2;          % Set robot movement speed (0.2 meters per iteration)
+safetyMargin = 3.0;        % Set the distance to avoid obstacles (3 meters)
+turnGain = 0.7;            % Set steering responsiveness (turning sensitivity)
+
+% Create map
+map = binaryOccupancyMap(mapSize, mapSize, resolution);
+
+%% ================== Map Configuration Based on Choice ==================
+switch mapChoice
+    case 1
+        startPos = [10, 90];       % Start position for Map 1
+        goalPos  = [90, 10];       % Goal position for Map 1
+        numObstacles = randi([15, 25]);  % Number of obstacles for Map 1
+    case 2
+        startPos = [90, 90];       % Start position for Map 2
+        goalPos  = [10, 10];       % Goal position for Map 2
+        numObstacles = randi([18, 28]);  % Number of obstacles for Map 2
+end
+
+minSize = 2; 
+maxSize = 8;
+
+% Generate obstacles for the selected map
+generateRandomObstacles(map, numObstacles, minSize, maxSize, startPos, goalPos);
+
+%% ================== Robot Configuration ==================
+currentPose = [startPos, -pi/2];  % Initialize robot's pose with starting position and orientation (-pi/2 radians)
+
+% Sensing parameters
+scanAngles = linspace(-pi, pi, 90);  % Lidar scanning angles (from -π to +π, 90 total angles)
+maxScanRange = 15;                   % Set the maximum scan range (15 meters)
+
+%% ================== Visualization Setup ==================
+figure;  % Create a new figure window
+show(map);  % Display the map (environment with obstacles)
+hold on;  % Hold the current plot for overlaying more elements
+title('Dynamic Obstacle Navigation');  % Set the plot title
+plot(startPos(1), startPos(2), 'gs', 'MarkerSize', 12, 'LineWidth', 2);  % Plot the start position as a green square
+plot(goalPos(1), goalPos(2), 'mh', 'MarkerSize', 12, 'LineWidth', 2);  % Plot the goal position as a magenta diamond
+robotPlot = plot(currentPose(1), currentPose(2), 'ro', 'MarkerSize', 8, 'MarkerFaceColor', 'r');  % Plot the robot's current position as a red circle
+pathPlot = animatedline('Color', [0 0.5 1], 'LineWidth', 1.8, 'Marker', '.');  % Create an animated line to show the robot’s path
+addpoints(pathPlot, currentPose(1), currentPose(2));  % Add the initial position to the path plot
+
+%% ================== Adaptive Navigation Loop ==================
+for t = 1:2000  % Loop for 2000 iterations (to simulate robot movement)
+    % Lidar Scan: Get range and angles from the robot's Lidar sensor
+    [ranges, angles] = lidarScan(map, currentPose, scanAngles, maxScanRange);  
+    
+    % Adaptive Navigation Logic: Determine the new position based on lidar data and the goal position
+    [newX, newY, newTheta] = adaptiveNavigation(...
+        currentPose, ranges, angles, goalPos, safetyMargin, robotSpeed, turnGain);
+    
+    % Update robot's current position with new calculated values
+    currentPose = [newX, newY, newTheta];
+    
+    % Update the visualization plot to show the new position of the robot
+    set(robotPlot, 'XData', newX, 'YData', newY);  % Update robot's position on the plot
+    addpoints(pathPlot, newX, newY);  % Add the new position to the path plot
+    drawnow limitrate  % Refresh the plot at a limited rate to improve performance
+    
+    % Goal condition: If the robot reaches the goal within a threshold distance, exit the loop
+    if norm(currentPose(1:2)-goalPos) < 8  % If distance to goal is less than 8 meters
+        disp('Goal reached with unique path!');  % Display message when the goal is reached
+        break;  % Exit the loop as goal is reached
+    end
+    
+    pause(0.02)  % Pause for a short duration to simulate real-time movement
+end
+
+%% ====== Core Functions ======
+
+function generateRandomObstacles(map, numObs, minS, maxS, startPos, goalPos)
+    % Function to generate random obstacles on the map
+    for i = 1:numObs  % Loop through number of obstacles to generate
+        validPos = false;  % Flag to ensure valid placement of obstacles
+        while ~validPos  % Continue searching for valid positions
+            pos = randi([5, 95], 1, 2);  % Randomly generate obstacle position avoiding edges
+            if norm(pos - startPos) > 15 && norm(pos - goalPos) > 15  % Ensure obstacles are not near start or goal
+                validPos = true;  % Mark position as valid
+            end
+        end
+        
+        % Randomize the obstacle size within given range
+        w = randi([minS, maxS]);  % Width of the obstacle
+        h = randi([minS, maxS]);  % Height of the obstacle
+        
+        % Create obstacle block on the map (set occupancy for grid points)
+        [xGrid, yGrid] = meshgrid(pos(1)-floor(w/2):pos(1)+floor(w/2), ...
+                          pos(2)-floor(h/2):pos(2)+floor(h/2));  % Define obstacle grid
+        setOccupancy(map, [xGrid(:) yGrid(:)], ones(numel(xGrid), 1));  % Mark grid points as occupied
+    end
+end
+
+function [newX, newY, newTheta] = adaptiveNavigation(pose, ranges, angles, goal, safety, speed, turnGain)
+    % Function to calculate robot's new position based on adaptive navigation
+    
+    % Calculate the direction to the goal (vector pointing towards the goal)
+    goalVector = goal - pose(1:2);
+    [goalTheta, ~] = cart2pol(goalVector(1), goalVector(2));  % Convert goal vector to polar coordinates
+    
+    % Attraction force: Robot is attracted to the goal position
+    attraction = 0.5 * [cos(goalTheta), sin(goalTheta)];
+    
+    repulsion = [0, 0];  % Initialize the repulsion force (avoid obstacles)
+    
+    % Adaptive obstacle avoidance logic based on Lidar readings
+    for i = 1:length(ranges)  % Loop through all lidar scan readings
+        if ranges(i) < safety * 2  % If obstacle is within the safety margin (less than twice the safety margin)
+            obstacleDir = angles(i);  % Direction of the detected obstacle
+            distance = max(ranges(i), 0.1);  % Ensure distance is at least 0.1 meters
+            % Add repulsion force inversely proportional to the square of the distance
+            repulsion = repulsion + (1/distance^2) * ...
+                       [cos(obstacleDir + pi), sin(obstacleDir + pi)];  % Push away from the obstacle
+        end
+    end
+    
+    % Combine the attraction and repulsion forces (goal attraction and obstacle avoidance)
+    totalForce = attraction + 0.6*repulsion;  % Weighing the forces
+    desiredTheta = atan2(totalForce(2), totalForce(1));  % Calculate desired robot heading
+    
+    % Smooth steering: Adjust the robot’s heading gradually (angleError)
+    angleError = angdiff(pose(3), desiredTheta);  % Calculate the difference between current and desired heading
+    turnRate = turnGain * angleError;  % Steering rate (how fast to turn)
+    
+    % Update the robot's position and orientation based on the computed forces
+    newTheta = pose(3) + turnRate;  % Update orientation (theta)
+    newX = pose(1) + speed * cos(newTheta);  % Update X position
+    newY = pose(2) + speed * sin(newTheta);  % Update Y position
+    
+    % Boundary constraints: Ensure the robot stays within the map
+    newX = clamp(newX, 2, 98);  % Clamp X position between 2 and 98 meters
+    newY = clamp(newY, 2, 98);  % Clamp Y position between 2 and 98 meters
+end
+
+function [ranges, angles] = lidarScan(map, pose, relativeAngles, maxRange)
+    % Function to simulate the Lidar scan and return obstacle distances and angles
+    
+    angles = pose(3) + relativeAngles;  % Adjust the scanning angles based on the robot's current heading
+    ranges = zeros(size(angles));  % Initialize range array
+    
+    % Loop through all scan angles and calculate the distance to the closest obstacle
+    for i = 1:length(angles)
+        endPoint = rayIntersection(map, pose, angles(i), maxRange);  % Cast a ray in the given angle and check for collisions
+        if any(isnan(endPoint))  % If no obstacle is detected, set the range to the maximum
+            ranges(i) = maxRange;
+        else  % If an obstacle is detected, calculate the distance
+            dx = endPoint(1) - pose(1);  % Calculate the X distance
+            dy = endPoint(2) - pose(2);  % Calculate the Y distance
+            ranges(i) = sqrt(dx^2 + dy^2);  % Calculate the total distance
+        end
+    end
+end
+
+function val = clamp(val, minVal, maxVal)
+    % Function to limit the value between a minimum and maximum range
+    val = max(min(val, maxVal), minVal);  % Clamp value between minVal and maxVal
+end
